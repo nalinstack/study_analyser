@@ -1,301 +1,266 @@
 import streamlit as st
-import pandas as pd
-import matplotlib.pyplot as plt
-from datetime import date
+import requests
+from streamlit_autorefresh import st_autorefresh
 
-st.set_page_config(page_title="Smart Study Planner + Performance Analyzer", layout="wide")
+# ---------------- PAGE CONFIG ----------------
+st.set_page_config(
+    page_title="CrashGuard Dashboard",
+    page_icon="🚗",
+    layout="wide",
+)
 
-# ---------------------------
-# Session state initialization
-# ---------------------------
-if "subjects" not in st.session_state:
-    st.session_state.subjects = []
+# ---------------- AUTO REFRESH ----------------
+st_autorefresh(interval=3000, limit=None, key="dashboard_refresh")
 
-if "progress_data" not in st.session_state:
-    st.session_state.progress_data = pd.DataFrame(
-        columns=["Date", "Subject", "Planned Hours", "Actual Hours", "Score", "Completion %"]
-    )
+# ---------------- CUSTOM CSS ----------------
+st.markdown(
+    """
+    <style>
+        .stApp {
+            background: linear-gradient(135deg, #0f172a, #111827, #1e293b);
+            color: white;
+        }
 
-# ---------------------------
-# Helper functions
-# ---------------------------
-def difficulty_weight(level: str) -> int:
-    mapping = {
-        "Easy": 1,
-        "Medium": 2,
-        "Hard": 3
-    }
-    return mapping.get(level, 1)
+        .main-title {
+            font-size: 2.7rem;
+            font-weight: 800;
+            color: #f8fafc;
+            margin-bottom: 0.2rem;
+        }
 
-def preparation_penalty(level: str) -> int:
-    mapping = {
-        "High": 0,
-        "Medium": 1,
-        "Low": 2
-    }
-    return mapping.get(level, 1)
+        .subtitle {
+            font-size: 1rem;
+            color: #94a3b8;
+            margin-bottom: 1.5rem;
+        }
 
-def generate_plan(subjects, hours_per_day, days_left):
-    total_weight = 0
-    weighted_subjects = []
+        .card {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 20px;
+            padding: 20px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+            backdrop-filter: blur(10px);
+            margin-bottom: 20px;
+        }
 
-    for sub in subjects:
-        weight = difficulty_weight(sub["Difficulty"]) + preparation_penalty(sub["Preparation"])
-        total_weight += weight
-        weighted_subjects.append({
-            "Subject": sub["Subject"],
-            "Difficulty": sub["Difficulty"],
-            "Preparation": sub["Preparation"],
-            "Weight": weight
-        })
+        .metric-title {
+            font-size: 0.95rem;
+            color: #cbd5e1;
+            margin-bottom: 5px;
+        }
 
-    if total_weight == 0:
-        return pd.DataFrame()
+        .metric-value {
+            font-size: 1.7rem;
+            font-weight: 700;
+            color: #ffffff;
+        }
 
-    plan_rows = []
-    for day in range(1, days_left + 1):
-        for sub in weighted_subjects:
-            allocated = round((sub["Weight"] / total_weight) * hours_per_day, 2)
-            plan_rows.append({
-                "Day": f"Day {day}",
-                "Subject": sub["Subject"],
-                "Difficulty": sub["Difficulty"],
-                "Preparation": sub["Preparation"],
-                "Allocated Hours": allocated
-            })
+        .status-safe {
+            padding: 12px 18px;
+            border-radius: 14px;
+            background: rgba(34,197,94,0.15);
+            border: 1px solid rgba(34,197,94,0.4);
+            color: #bbf7d0;
+            font-weight: 700;
+            text-align: center;
+            font-size: 1.05rem;
+        }
 
-    return pd.DataFrame(plan_rows)
+        .status-alert {
+            padding: 12px 18px;
+            border-radius: 14px;
+            background: rgba(239,68,68,0.16);
+            border: 1px solid rgba(239,68,68,0.45);
+            color: #fecaca;
+            font-weight: 700;
+            text-align: center;
+            font-size: 1.05rem;
+        }
 
-def get_ai_suggestions(progress_df):
-    suggestions = []
+        .small-note {
+            color: #94a3b8;
+            font-size: 0.9rem;
+        }
 
-    if progress_df.empty:
-        return ["No progress data yet. Start entering your study progress to get suggestions."]
+        .footer-text {
+            text-align: center;
+            color: #94a3b8;
+            margin-top: 20px;
+            font-size: 0.9rem;
+        }
 
-    grouped = progress_df.groupby("Subject").agg({
-        "Planned Hours": "sum",
-        "Actual Hours": "sum",
-        "Score": "mean",
-        "Completion %": "mean"
-    }).reset_index()
+        div.stButton > button {
+            border-radius: 12px;
+            border: none;
+            padding: 0.65rem 1rem;
+            font-weight: 700;
+            background: linear-gradient(90deg, #2563eb, #7c3aed);
+            color: white;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-    for _, row in grouped.iterrows():
-        subject = row["Subject"]
-        planned = row["Planned Hours"]
-        actual = row["Actual Hours"]
-        score = row["Score"]
-        completion = row["Completion %"]
+# ---------------- HEADER ----------------
+st.markdown('<div class="main-title">🚗 CrashGuard Dashboard</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="subtitle">Real-time IoT accident detection and emergency response monitoring system</div>',
+    unsafe_allow_html=True,
+)
 
-        if actual < planned:
-            suggestions.append(f"You are behind schedule in **{subject}**. Study more hours for this subject.")
-        if score < 50:
-            suggestions.append(f"**{subject}** needs urgent revision. Your average score is below 50.")
-        elif score < 70:
-            suggestions.append(f"Focus a bit more on **{subject}** to improve your performance.")
-        else:
-            suggestions.append(f"Good job in **{subject}**. Keep maintaining your score.")
+# ---------------- BACKEND API ----------------
+backend_url = "http://127.0.0.1:5000/latest-alert"
 
-        if completion < 50:
-            suggestions.append(f"Your syllabus completion in **{subject}** is low. Increase topic coverage.")
+default_data = {
+    "status": "Safe",
+    "latitude": 13.0827,
+    "longitude": 80.2707,
+    "vehicle_id": "CG-101",
+    "last_update": "Live",
+    "severity": "Low"
+}
 
-    if not suggestions:
-        suggestions.append("You are doing well overall. Keep following your study plan consistently.")
-
-    return suggestions
-
-# ---------------------------
-# App title
-# ---------------------------
-st.title("Smart Study Planner + Performance Analyzer")
-st.write("Plan your study schedule, track progress, analyze performance, and get AI-based suggestions.")
-
-# ---------------------------
-# Sidebar inputs
-# ---------------------------
-st.sidebar.header("Student Setup")
-
-student_name = st.sidebar.text_input("Student Name", "Student")
-hours_per_day = st.sidebar.number_input("Available Study Hours per Day", min_value=1.0, max_value=24.0, value=5.0, step=0.5)
-days_left = st.sidebar.number_input("Days Left for Exam", min_value=1, max_value=365, value=7, step=1)
-
-st.sidebar.subheader("Add Subject")
-
-subject_name = st.sidebar.text_input("Subject Name")
-difficulty = st.sidebar.selectbox("Difficulty", ["Easy", "Medium", "Hard"])
-preparation = st.sidebar.selectbox("Preparation Level", ["High", "Medium", "Low"])
-
-if st.sidebar.button("Add Subject"):
-    if subject_name.strip():
-        st.session_state.subjects.append({
-            "Subject": subject_name.strip(),
-            "Difficulty": difficulty,
-            "Preparation": preparation
-        })
-        st.sidebar.success(f"{subject_name} added.")
+try:
+    response = requests.get(backend_url, timeout=3)
+    if response.status_code == 200:
+        data = response.json()
     else:
-        st.sidebar.warning("Enter a valid subject name.")
+        data = default_data
+except Exception:
+    data = default_data
 
-if st.sidebar.button("Clear Subjects"):
-    st.session_state.subjects = []
-    st.sidebar.success("All subjects cleared.")
+status = data.get("status", "Safe")
+latitude = data.get("latitude", 13.0827)
+longitude = data.get("longitude", 80.2707)
+vehicle_id = data.get("vehicle_id", "CG-101")
+last_update = data.get("last_update", "Live")
+severity = data.get("severity", "Low")
 
-# ---------------------------
-# Show subject list
-# ---------------------------
-st.subheader(f"Welcome, {student_name}")
+maps_link = f"https://www.google.com/maps?q={latitude},{longitude}"
 
-if st.session_state.subjects:
-    subjects_df = pd.DataFrame(st.session_state.subjects)
-    st.write("### Added Subjects")
-    st.dataframe(subjects_df, use_container_width=True)
-else:
-    st.info("No subjects added yet. Add subjects from the sidebar.")
+# ---------------- TOP METRICS ----------------
+m1, m2, m3, m4 = st.columns(4)
 
-# ---------------------------
-# Generate study plan
-# ---------------------------
-st.write("## Study Plan")
-
-plan_df = generate_plan(st.session_state.subjects, hours_per_day, days_left)
-
-if not plan_df.empty:
-    st.dataframe(plan_df, use_container_width=True)
-else:
-    st.warning("Add at least one subject to generate the study plan.")
-
-# ---------------------------
-# Progress tracker
-# ---------------------------
-st.write("## Progress Tracker")
-
-if st.session_state.subjects:
-    subject_options = [sub["Subject"] for sub in st.session_state.subjects]
-
-    with st.form("progress_form"):
-        progress_date = st.date_input("Date", value=date.today())
-        progress_subject = st.selectbox("Subject", subject_options)
-        planned_hours = st.number_input("Planned Hours", min_value=0.0, value=1.0, step=0.5)
-        actual_hours = st.number_input("Actual Hours Studied", min_value=0.0, value=1.0, step=0.5)
-        score = st.number_input("Test Score", min_value=0.0, max_value=100.0, value=50.0, step=1.0)
-        completion = st.number_input("Completion Percentage", min_value=0.0, max_value=100.0, value=50.0, step=1.0)
-
-        submitted = st.form_submit_button("Add Progress")
-
-        if submitted:
-            new_row = pd.DataFrame([{
-                "Date": progress_date,
-                "Subject": progress_subject,
-                "Planned Hours": planned_hours,
-                "Actual Hours": actual_hours,
-                "Score": score,
-                "Completion %": completion
-            }])
-
-            st.session_state.progress_data = pd.concat(
-                [st.session_state.progress_data, new_row],
-                ignore_index=True
-            )
-            st.success("Progress added successfully.")
-
-else:
-    st.info("Add subjects first to start tracking progress.")
-
-if not st.session_state.progress_data.empty:
-    st.write("### Progress Data")
-    st.dataframe(st.session_state.progress_data, use_container_width=True)
-
-# ---------------------------
-# Analytics dashboard
-# ---------------------------
-st.write("## Performance Dashboard")
-
-if not st.session_state.progress_data.empty:
-    progress_df = st.session_state.progress_data.copy()
-
-    grouped = progress_df.groupby("Subject").agg({
-        "Planned Hours": "sum",
-        "Actual Hours": "sum",
-        "Score": "mean",
-        "Completion %": "mean"
-    }).reset_index()
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.write("### Subject-wise Average Score")
-        fig1, ax1 = plt.subplots()
-        ax1.bar(grouped["Subject"], grouped["Score"])
-        ax1.set_xlabel("Subject")
-        ax1.set_ylabel("Average Score")
-        ax1.set_title("Average Score by Subject")
-        st.pyplot(fig1)
-
-    with col2:
-        st.write("### Planned vs Actual Study Hours")
-        fig2, ax2 = plt.subplots()
-        x = range(len(grouped))
-        ax2.bar([i - 0.2 for i in x], grouped["Planned Hours"], width=0.4, label="Planned Hours")
-        ax2.bar([i + 0.2 for i in x], grouped["Actual Hours"], width=0.4, label="Actual Hours")
-        ax2.set_xticks(list(x))
-        ax2.set_xticklabels(grouped["Subject"])
-        ax2.set_xlabel("Subject")
-        ax2.set_ylabel("Hours")
-        ax2.set_title("Planned vs Actual Hours")
-        ax2.legend()
-        st.pyplot(fig2)
-
-    st.write("### Completion Percentage")
-    fig3, ax3 = plt.subplots()
-    ax3.bar(grouped["Subject"], grouped["Completion %"])
-    ax3.set_xlabel("Subject")
-    ax3.set_ylabel("Completion %")
-    ax3.set_title("Syllabus Completion by Subject")
-    st.pyplot(fig3)
-
-    overall_score = round(progress_df["Score"].mean(), 2)
-    overall_completion = round(progress_df["Completion %"].mean(), 2)
-    total_planned = round(progress_df["Planned Hours"].sum(), 2)
-    total_actual = round(progress_df["Actual Hours"].sum(), 2)
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Overall Avg Score", overall_score)
-    c2.metric("Overall Completion %", overall_completion)
-    c3.metric("Total Planned Hours", total_planned)
-    c4.metric("Total Actual Hours", total_actual)
-
-else:
-    st.info("No progress data available yet.")
-
-# ---------------------------
-# AI suggestions
-# ---------------------------
-st.write("## AI Suggestions")
-
-suggestions = get_ai_suggestions(st.session_state.progress_data)
-for s in suggestions:
-    st.write(f"- {s}")
-
-# ---------------------------
-# Optional download
-# ---------------------------
-st.write("## Download Progress Data")
-
-if not st.session_state.progress_data.empty:
-    csv = st.session_state.progress_data.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        label="Download CSV",
-        data=csv,
-        file_name="study_progress.csv",
-        mime="text/csv"
+with m1:
+    st.markdown(
+        f"""
+        <div class="card">
+            <div class="metric-title">Vehicle ID</div>
+            <div class="metric-value">{vehicle_id}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-# ---------------------------
-# Reset button
-# ---------------------------
-st.write("## Reset App Data")
-if st.button("Reset All Data"):
-    st.session_state.subjects = []
-    st.session_state.progress_data = pd.DataFrame(
-        columns=["Date", "Subject", "Planned Hours", "Actual Hours", "Score", "Completion %"]
+with m2:
+    st.markdown(
+        f"""
+        <div class="card">
+            <div class="metric-title">System Update</div>
+            <div class="metric-value">{last_update}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    st.success("All app data has been reset.")
+
+with m3:
+    st.markdown(
+        f"""
+        <div class="card">
+            <div class="metric-title">Severity</div>
+            <div class="metric-value">{severity}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with m4:
+    system_state = "ACTIVE" if status != "Safe" else "MONITORING"
+    st.markdown(
+        f"""
+        <div class="card">
+            <div class="metric-title">Mode</div>
+            <div class="metric-value">{system_state}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# ---------------- MAIN LAYOUT ----------------
+left, right = st.columns([1.1, 1.2])
+
+with left:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("System Status")
+
+    if status.lower() == "safe":
+        st.markdown('<div class="status-safe">✅ No Accident Detected</div>', unsafe_allow_html=True)
+        st.markdown("<p class='small-note'>Vehicle conditions are normal and continuously monitored.</p>", unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="status-alert">🚨 Accident Detected</div>', unsafe_allow_html=True)
+        st.markdown("<p class='small-note'>Emergency alert triggered and sent to the backend monitoring system.</p>", unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.subheader("Alert Information")
+    st.write(f"**Status:** {status}")
+    st.write(f"**Latitude:** {latitude}")
+    st.write(f"**Longitude:** {longitude}")
+    st.write(f"**Severity:** {severity}")
+
+    st.link_button("📍 Open in Google Maps", maps_link)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("System Summary")
+    st.write("- MPU6050 monitors motion, tilt, and impact conditions.")
+    st.write("- GPS provides the live accident location.")
+    st.write("- Backend processes alerts and updates dashboard.")
+    st.write("- Cloud integration can trigger SMS alerts.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with right:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("📍 Live Location")
+    st.map({"lat": [latitude], "lon": [longitude]})
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("Recent Alert Log")
+    st.dataframe(
+        [
+            {
+                "Vehicle ID": vehicle_id,
+                "Status": status,
+                "Severity": severity,
+                "Latitude": latitude,
+                "Longitude": longitude,
+                "Update": last_update,
+            }
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ---------------- MANUAL DEMO CONTROLS ----------------
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.subheader("Demo Controls")
+st.caption("Use this section only for hackathon demonstration when backend/hardware is unavailable.")
+
+demo_col1, demo_col2 = st.columns(2)
+
+with demo_col1:
+    st.info("The current dashboard primarily reads from the backend API.")
+
+with demo_col2:
+    st.success("UI is ready for integration with Member 2 backend and Member 1 ESP32 data flow.")
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+# ---------------- FOOTER ----------------
+st.markdown(
+    '<div class="footer-text">CrashGuard • IoT-Based Smart Accident Detection and Emergency Response System</div>',
+    unsafe_allow_html=True,
+)
